@@ -51,7 +51,7 @@ impl ActiveModelBehavior for ActiveModel {}
 pub enum Relation {
     #[sea_orm(has_one = "super::room::Entity")]
     Room,
-    #[sea_orm(has_one = "super::buffer::Entity")]
+    #[sea_orm(has_many = "super::buffer::Entity")]
     Buffer,
     #[sea_orm(has_many = "super::channel_member::Entity")]
     Member,

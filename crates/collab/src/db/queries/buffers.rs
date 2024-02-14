@@ -22,20 +22,21 @@ impl Database {
             self.check_user_is_channel_participant(&channel, user_id, &tx)
                 .await?;
 
-            let buffer = channel::Model {
-                id: channel_id,
-                ..Default::default()
-            }
-            .find_related(buffer::Entity)
-            .one(&*tx)
-            .await?;
+            let buffer = buffer::Entity::find()
+                .filter(buffer::Column::ChannelId.eq(channel_id))
+                .filter(buffer::Column::IsNotes.eq(true))
+                .one(&*tx)
+                .await?;
 
             let buffer = if let Some(buffer) = buffer {
                 buffer
             } else {
                 let buffer = buffer::ActiveModel {
                     channel_id: ActiveValue::Set(channel_id),
-                    ..Default::default()
+                    epoch: ActiveValue::NotSet,
+                    id: ActiveValue::NotSet,
+                    name: ActiveValue::Set("notes".into()),
+                    is_notes: ActiveValue::Set(true),
                 }
                 .insert(&*tx)
                 .await?;
@@ -145,7 +146,7 @@ impl Database {
                     continue;
                 }
 
-                let buffer = self.get_channel_buffer(channel.id, &*tx).await?;
+                let buffer = self.get_channel_notes_buffer(channel.id, &*tx).await?;
                 let mut collaborators = channel_buffer_collaborator::Entity::find()
                     .filter(channel_buffer_collaborator::Column::ChannelId.eq(channel.id))
                     .all(&*tx)
@@ -468,6 +469,7 @@ impl Database {
 
             let buffer = buffer::Entity::find()
                 .filter(buffer::Column::ChannelId.eq(channel_id))
+                .filter(buffer::Column::IsNotes.eq(true))
                 .one(&*tx)
                 .await?
                 .ok_or_else(|| anyhow!("no such buffer"))?;
@@ -609,19 +611,17 @@ impl Database {
             .ok_or_else(|| anyhow!("missing buffer snapshot"))?)
     }
 
-    pub async fn get_channel_buffer(
+    pub async fn get_channel_notes_buffer(
         &self,
         channel_id: ChannelId,
         tx: &DatabaseTransaction,
     ) -> Result<buffer::Model> {
-        Ok(channel::Model {
-            id: channel_id,
-            ..Default::default()
-        }
-        .find_related(buffer::Entity)
-        .one(&*tx)
-        .await?
-        .ok_or_else(|| anyhow!("no such buffer"))?)
+        Ok(buffer::Entity::find()
+            .filter(buffer::Column::ChannelId.eq(channel_id))
+            .filter(buffer::Column::IsNotes.eq(true))
+            .one(&*tx)
+            .await?
+            .ok_or_else(|| anyhow!("no such buffer"))?)
     }
 
     async fn get_buffer_state(
@@ -686,7 +686,7 @@ impl Database {
         channel_id: ChannelId,
         tx: &DatabaseTransaction,
     ) -> Result<()> {
-        let buffer = self.get_channel_buffer(channel_id, tx).await?;
+        let buffer = self.get_channel_notes_buffer(channel_id, tx).await?;
         let (base_text, operations, _) = self.get_buffer_state(&buffer, tx).await?;
         if operations.is_empty() {
             return Ok(());
@@ -749,18 +749,18 @@ impl Database {
 
     pub async fn latest_channel_buffer_changes(
         &self,
-        channel_ids_by_buffer_id: &HashMap<BufferId, ChannelId>,
+        buffer_ids: impl Iterator<Item = BufferId>,
         tx: &DatabaseTransaction,
-    ) -> Result<Vec<proto::ChannelBufferVersion>> {
+    ) -> Result<Vec<proto::ChannelBufferVersion2>> {
         let latest_operations = self
-            .get_latest_operations_for_buffers(channel_ids_by_buffer_id.keys().copied(), &*tx)
+            .get_latest_operations_for_buffers(buffer_ids, &*tx)
             .await?;
 
         Ok(latest_operations
             .iter()
             .flat_map(|op| {
-                Some(proto::ChannelBufferVersion {
-                    channel_id: channel_ids_by_buffer_id.get(&op.buffer_id)?.to_proto(),
+                Some(proto::ChannelBufferVersion2 {
+                    buffer_id: op.buffer_id.0 as u64,
                     epoch: op.epoch as u64,
                     version: vec![proto::VectorClockEntry {
                         replica_id: op.replica_id as u32,
@@ -773,28 +773,25 @@ impl Database {
 
     pub async fn observed_channel_buffer_changes(
         &self,
-        channel_ids_by_buffer_id: &HashMap<BufferId, ChannelId>,
+        buffer_ids: impl Iterator<Item = BufferId>,
         user_id: UserId,
         tx: &DatabaseTransaction,
-    ) -> Result<Vec<proto::ChannelBufferVersion>> {
+    ) -> Result<Vec<proto::ChannelBufferVersion2>> {
         let observed_operations = observed_buffer_edits::Entity::find()
             .filter(observed_buffer_edits::Column::UserId.eq(user_id))
-            .filter(
-                observed_buffer_edits::Column::BufferId
-                    .is_in(channel_ids_by_buffer_id.keys().copied()),
-            )
+            .filter(observed_buffer_edits::Column::BufferId.is_in(buffer_ids))
             .all(&*tx)
             .await?;
 
         Ok(observed_operations
             .iter()
-            .flat_map(|op| {
-                Some(proto::ChannelBufferVersion {
-                    channel_id: channel_ids_by_buffer_id.get(&op.buffer_id)?.to_proto(),
-                    epoch: op.epoch as u64,
+            .flat_map(|observed| {
+                Some(proto::ChannelBufferVersion2 {
+                    buffer_id: observed.buffer_id.0 as u64,
+                    epoch: observed.epoch as u64,
                     version: vec![proto::VectorClockEntry {
-                        replica_id: op.replica_id as u32,
-                        timestamp: op.lamport_timestamp as u32,
+                        replica_id: observed.replica_id as u32,
+                        timestamp: observed.lamport_timestamp as u32,
                     }],
                 })
             })

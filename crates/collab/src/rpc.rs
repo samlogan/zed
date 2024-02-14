@@ -3340,6 +3340,23 @@ fn notify_membership_updated(
 }
 
 fn build_update_user_channels(channels: &ChannelsForUser) -> proto::UpdateUserChannels {
+    let mut notes_ids = HashMap::default();
+    for buffer in &channels.buffers {
+        if buffer.is_notes {
+            notes_ids.insert(buffer.id, buffer.channel_id);
+        }
+    }
+    // TODO: this can be removed after zed 0.123.x is retired
+    let mut observed_buffer_versions = Vec::new();
+    for version in &channels.observed_buffer_versions {
+        if let Some(channel_id) = notes_ids.get(&version.buffer_id) {
+            observed_buffer_versions.push(proto::ChannelBufferVersion {
+                channel_id: *channel_id,
+                epoch: version.epoch,
+                version: version.version.clone(),
+            })
+        }
+    }
     proto::UpdateUserChannels {
         channel_memberships: channels
             .channel_memberships
@@ -3349,7 +3366,8 @@ fn build_update_user_channels(channels: &ChannelsForUser) -> proto::UpdateUserCh
                 role: m.role.into(),
             })
             .collect(),
-        observed_channel_buffer_version: channels.observed_buffer_versions.clone(),
+        observed_channel_buffer_version: observed_buffer_versions,
+        observed_buffer_versions: channels.observed_buffer_versions.clone(),
         observed_channel_message_id: channels.observed_channel_messages.clone(),
         ..Default::default()
     }
@@ -3365,7 +3383,26 @@ fn build_channels_update(
         update.channels.push(channel.to_proto());
     }
 
-    update.latest_channel_buffer_versions = channels.latest_buffer_versions;
+    let mut notes_ids = HashMap::default();
+    for buffer in channels.buffers {
+        if buffer.is_notes {
+            notes_ids.insert(buffer.id, buffer.channel_id);
+        }
+    }
+    // TODO: this can be removed after zed 0.123.x is retired
+    let mut latest_notes_versions = Vec::new();
+    for version in &channels.latest_buffer_versions {
+        if let Some(channel_id) = notes_ids.get(&version.buffer_id) {
+            latest_notes_versions.push(proto::ChannelBufferVersion {
+                channel_id: *channel_id,
+                epoch: version.epoch,
+                version: version.version.clone(),
+            })
+        }
+    }
+
+    update.latest_channel_buffer_versions = latest_notes_versions;
+    update.latest_buffer_versions = channels.latest_buffer_versions;
     update.latest_channel_message_ids = channels.latest_channel_messages;
 
     for (channel_id, participants) in channels.channel_participants {
